@@ -212,6 +212,7 @@ def setup_model_and_tokenizer(
             A tuple containing the inference-wrapped model and Mcore wrapped tokenizer.
     """
     model: io.TrainerContext = io.load_context(path=ckpt_to_context_subdir(path), subpath="model")
+    model.config.make_vocab_size_divisible_by = 1
     _setup_trainer_and_restore_model(path=path, trainer=trainer, model=model)
 
     inference_wrapped_model = model.get_inference_wrapper(
