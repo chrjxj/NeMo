@@ -100,7 +100,7 @@ class FSDP(torch.nn.Module):
         self,
         ddp_config: DistributedDataParallelConfig,
         module: torch.nn.Module,
-        fsdp_unit_modules: List[torch.nn.Module] = [],
+        fsdp_unit_modules: Optional[List[torch.nn.Module]] = None,
         disable_bucketing: bool = False,
         device: Optional[torch.device] = None,
         device_mesh: Optional[DeviceMesh] = None,
@@ -156,7 +156,7 @@ class FSDP(torch.nn.Module):
         if disable_bucketing:
             self.bucket_size = None
 
-        self.fsdp_unit_modules = fsdp_unit_modules
+        self.fsdp_unit_modules = fsdp_unit_modules if fsdp_unit_modules is not None else []
         self.main_weights = True
 
         # Determine if we should delay the gradient reduction.
@@ -171,7 +171,7 @@ class FSDP(torch.nn.Module):
 
         self._init_fsdp_param_and_grad_buffer()
         self._register_fsdp_hooks(self.module)
-        self.raw_param_data = {}
+        self.raw_param_data = {name: param.data for name, param in self.module.named_parameters()}
 
     def _init_fsdp_param_and_grad_buffer(self):
         if self.calculate_per_token_loss:
@@ -208,6 +208,7 @@ class FSDP(torch.nn.Module):
             reset_parameters_for_meta_device_init_module=self.init_model_with_meta_device,
         )
 
+        # Initialize a gradient buffer and accumulation stream for the GradReducePipeline.
         self.side_stream_for_buffer_copy_and_grad_accum = torch.cuda.Stream()
 
         # Initialize the reduce-scatter pipeline.
@@ -218,6 +219,7 @@ class FSDP(torch.nn.Module):
         # Initialize the all-gather pipeline.
         self.all_gather_pipeline = AllGatherPipeline(self.param_and_grad_buffer)
 
+        # Set the suggested communication unit size for reduce-scatter and all-gather pipelines.
         suggested_communication_unit_size = self.ddp_config.suggested_communication_unit_size
         if suggested_communication_unit_size is None:
             if self.data_parallel_sharding_strategy == "optim_grads_params":
@@ -302,6 +304,9 @@ class FSDP(torch.nn.Module):
             prefetch_order=PrefetchOrder.FORWARD_PASS_ORDER,
             wait_bucket_ready=True,
         ):
+            """
+            All-gather all module parameters.
+            """
             ag_pipeline = self.all_gather_pipeline
             ag_pipeline.all_gather_params(
                 params=list(module.parameters()),
@@ -317,6 +322,9 @@ class FSDP(torch.nn.Module):
         def _grad_acc(param):
             """
             Accumulate the gradient in the main_grad buffer.
+
+            Utilizes the patched main_grad property of the parameter to allocate
+            or fetch the main gradient bucket for the parameter.
             """
             group_id = self.param_and_grad_buffer.param_to_param_group[param]
             group = self.param_and_grad_buffer.parameter_groups[group_id]
@@ -327,16 +335,20 @@ class FSDP(torch.nn.Module):
                 "optim_grads",
                 "optim_grads_params",
             ]
+            # Sharded Gradient Buffer
             if overwrite_main_grad:
                 if not param.grad_added_to_main_grad:
                     if param.grad is not None:
+                        # Copy the gradient into the allocated main gradient bucket.
                         param.main_grad.copy_(param.grad)
                         del param.grad
                     else:
                         param.main_grad.zero_()
+            # Unsharded Gradient Buffer
             else:
                 if not param.grad_added_to_main_grad:
                     if param.grad is not None:
+                        # Add the gradient into the allocated main gradient bucket.
                         param.main_grad.add_(param.grad)
                         del param.grad
             # Reset the grad accumulate flag.
@@ -345,14 +357,21 @@ class FSDP(torch.nn.Module):
         self._params_require_handle_grad = set()
 
         def _post_backward(module, *unused):
+            """
+            Deallocate the module parameters after the backward pass,
+            and reduce-scatter the gradients before the optimizer step.
+            """
             if isinstance(module, tuple(fsdp_unit_modules)):
                 if self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params":
+                    # Deallocate the module parameters after the backward pass,
+                    # because we have our data-parallel gradients computed.
                     release_module_parameters(module)
                     module._training_state = TrainingState.IDLE
                 param_list = list(module.parameters())
             else:
                 param_list = list(module.parameters(recurse=False))
 
+            # Write computed gradients into the allocated main gradient bucket for reduce-scatter.
             for param in param_list:
                 _grad_acc(param)
                 self._params_require_handle_grad.discard(param)
@@ -362,6 +381,8 @@ class FSDP(torch.nn.Module):
                 "optim_grads_params",
             ]
             if grad_reduce_every_bprop or self.is_last_microbatch:
+                # Reduce-scatter the gradients asynchronously before the optimizer step.
+                # Requires calling finish_grad_sync() to wait for the reduce-scatter to complete.
                 self.grad_reduce_pipeline.reduce_gradients(
                     param_list, suggested_queue_capacity=self.suggested_RS_queue_capacity
                 )
@@ -387,7 +408,9 @@ class FSDP(torch.nn.Module):
                     bucket_id = self.param_and_grad_buffer.param_to_param_group[param]
                     self.all_gather_pipeline.wait_bucket_ready(bucket_id)
             else:
-                # All-gather the parameters in every forward pass for FSDP.
+                # All-gather the shallow parameters in every forward pass for modules
+                # that are not FSDP units. Do not recurse unless absolutely necessary,
+                # to allocate as little memory as possible for this forward pass.
                 param_list = list(module.parameters(recurse=False))
                 self.all_gather_pipeline.all_gather_params(
                     params=param_list,
@@ -405,11 +428,15 @@ class FSDP(torch.nn.Module):
             args: Tuple[Any, ...],
             kwargs: Dict[str, Any],
         ):
+            """
+            Pre-forward hook utilized to attach a gradient reduction post-backward hook to the module.
+            """
             # Register the backward function to reduce gradients after the backward pass.
             # And for optim_grads_params, we need to release the parameters after the backward pass.
             if not torch.is_grad_enabled():
                 return args, kwargs
 
+            # Preprocess the input arguments.
             args_list, args_spec = tree_flatten(args)
             kwargs_list, kwargs_spec = tree_flatten(kwargs)
             args_kwargs_list = list(args_list) + list(kwargs_list)
@@ -423,10 +450,18 @@ class FSDP(torch.nn.Module):
             if len(inp_tensors) == 0:
                 return args, kwargs
 
+            """
+            Bootstrapped identity autograd function that attaches a post-backward
+            "hook" to the module to trigger model resharding / deallocation and 
+            gradient reduce-scatter immediately after the module backward pass has 
+            completed to deallocate this layer's model and gradient memory before
+            the subsequent backward pass.
+            """
             inp_tensors = RegisterFSDPBackwardFunction.apply(
                 functools.partial(post_backward_hook, module), *inp_tensors
             )
 
+            # Post-process the input arguments for input into the module.
             for inp_tensor_idx, inp_tensor in zip(inp_tensor_indices, inp_tensors):
                 args_kwargs_list[inp_tensor_idx] = inp_tensor
             args_list = args_kwargs_list[: len(args_list)]
@@ -434,6 +469,7 @@ class FSDP(torch.nn.Module):
             args = tree_unflatten(args_list, args_spec)
             kwargs = tree_unflatten(kwargs_list, kwargs_spec)
 
+            # Return original input to the module forward pass.
             return args, kwargs
 
         def _root_post_backward(*unused):
@@ -441,7 +477,7 @@ class FSDP(torch.nn.Module):
             for param in self._params_require_handle_grad:
                 _grad_acc(param)
 
-            # Reduce the remain gradients.
+            # Reduce the remaining gradients.
             grad_reduce_every_bprop = self.ddp_config.data_parallel_sharding_strategy in [
                 "optim_grads",
                 "optim_grads_params",
@@ -461,8 +497,16 @@ class FSDP(torch.nn.Module):
                 self.grad_reduce_pipeline.wait_for_previous_grad_reduce(0)
 
         def _pre_backward(module: nn.Module, *unused):
+            """
+            Sub-module pre-backward hook to all-gather the module parameters
+            before the backward pass.
+            """
+            # Set the module's training state to PRE_BACKWARD to skip resharding
+            # and unsharding operations when performing activation recomputation
+            # / gradient checkpointing.
             module._training_state = TrainingState.PRE_BACKWARD
             if isinstance(module, tuple(fsdp_unit_modules)):
+                # All-gather / unshard the module parameters before the backward pass.
                 all_gather_module_parameters(module, prefetch_order=PrefetchOrder.BACKWARD_PASS_ORDER)
 
         self._root_pre_backward_hook_issued = False
@@ -482,11 +526,16 @@ class FSDP(torch.nn.Module):
             if self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params":
                 for module in root_module.modules():
                     if isinstance(module, tuple(fsdp_unit_modules)):
+                        # Set PRE_BACKWARD state to skip resharding and unsharding operations
+                        # when performing activation recomputation / gradient checkpointing.
                         module._training_state = TrainingState.PRE_BACKWARD
+                        # Deallocate all model parameter buckets before the backwards pass
+                        # to avoid memory spikes due to concurrently allocated buckets.
                         for param in module.parameters():
                             bucket_id = self.param_and_grad_buffer.param_to_param_group[param]
                             self.all_gather_pipeline.wait_bucket_ready(bucket_id, empty_ok=True)
                             self.all_gather_pipeline.release_bucket(bucket_id)
+            # Track parameters that require gradient reduction and optimization.
             self._params_require_handle_grad = set()
             for param_group in self.param_and_grad_buffer.parameter_groups:
                 if not param_group.requires_grad:
@@ -494,14 +543,19 @@ class FSDP(torch.nn.Module):
                 self._params_require_handle_grad |= set(param_group.params)
                 for param in param_group.params:
                     param.grad_added_to_main_grad = False
+            # Queue the root post-backward hook to reduce leftover gradients after the backward pass.
             torch.autograd.Variable._execution_engine.queue_callback(_root_post_backward)
 
         def _post_forward(module: nn.Module, input: Any, output: Any):
-            # When composing with module-hook-based activation checkpointing, the
-            # post-backward hook is responsible for the reshard
+            # When composed with module-hook-based activation recomputation, the
+            # post-backward hook is responsible for resharding the module parameters
+            # after the forward pass. Skip resharding the module parameters in this case.
             if module._training_state == TrainingState.PRE_BACKWARD:
+                # Skip weight deallocation until the backward pass is complete
+                # during activation recomputation / gradient checkpointing.
                 return output
 
+            # Release the module parameters after the forward pass to save memory.
             release_module_parameters(module)
             module._training_state = TrainingState.IDLE
 
@@ -511,15 +565,22 @@ class FSDP(torch.nn.Module):
             release_params_fp8_transpose_cache(module.parameters(recurse=False))
 
         def create_custom_backward_hook(module, custom_backward_handler):
+            """
+            Creates a custom backward hook via attaching a gradient-triggered hook
+            to the output tensor(s) of a module during a post-forward hook.
+            """
             def forward_hook(_module, inputs, output):
                 output_list = []
 
-                # Register backward hook on the output tensor(s)
+                # Post-process forward output.
                 if isinstance(output, torch.Tensor):
                     output_list = [output]
                 elif isinstance(output, (tuple, list)):
                     output_list = [t for t in output if isinstance(t, torch.Tensor)]
 
+                # Register pre-backward hook on the output tensor(s). This hook
+                # will trigger immediately after the gradients of the output
+                # tensor(s) have been computed.
                 torch.autograd.graph.register_multi_grad_hook(
                     output_list,
                     lambda grads: custom_backward_handler(_module, grads),
@@ -527,6 +588,8 @@ class FSDP(torch.nn.Module):
                 )
                 return output
 
+            # Register the post-forward hook that attaches the custom backward hook
+            # on the output tensor(s).
             return module.register_forward_hook(forward_hook)
 
         fsdp_modules = []
@@ -543,13 +606,15 @@ class FSDP(torch.nn.Module):
             if isinstance(module, tuple(fsdp_unit_modules)):
                 fsdp_modules.append(module)
                 # Register the forward post-hook to reshard FSDP unit module parameters
-                # after the forward pass.
+                # after the forward pass, except when recomputing forward activations,
+                # in which case we skip resharding for the subsequent backward pass.
                 self.forward_hooks[f"release module {name} parameters"] = module.register_forward_hook(
                     _post_forward, prepend=False
                 )
 
                 # Register the backward pre-hook to unshard FSDP unit module parameters
-                # before the backward pass.
+                # immediately before the backward pass via attaching a gradient-triggered 
+                # hook to the output tensor(s) of a module during a post-forward hook.
                 self.backward_pre_hooks[f"all-gather module {name} parameters"] = create_custom_backward_hook(
                     module, _pre_backward
                 )
@@ -565,19 +630,23 @@ class FSDP(torch.nn.Module):
                     _release_module_fp8_transpose_cache, prepend=False
                 )
 
-            # Register the backward post-hook to release parameters after the backward pass.
+            # Register the post-backward hook to deallocate model parameters and
+            # reduce-scatter gradients immediately after the module backward pass
+            # has completed to conserve memory for the subsequent backward pass.
             self.forward_pre_hooks[f"module {name} register post-backward hook"] = module.register_forward_pre_hook(
                 functools.partial(_register_post_backward_hook, _post_backward),
                 with_kwargs=True,
             )
 
-        # Registering all models with all parameters is to handle some special cases
-        # where the forward function of root_module is not called, but the forward
-        # functions of these equivalent modules are called instead.
+        # Register root module pre- and post-backward hooks in cases where the
+        # forward function of root module is not called, but rather the forward
+        # function of the root module from named_modules() is called instead.
         for name, module in root_module.named_modules():
             if len(list(module.parameters())) != len(list(root_module.parameters())):
+                # Only attach to root sub-module.
                 continue
-
+            # Add a pre-backward hook to reshard / deallocate model parameters prior to the backward pass.
+            # Furthermore, add a gradient-triggered post-backward hook to reduce-scatter leftover gradients.
             self.backward_pre_hooks[f"{name} _root_pre_backward"] = create_custom_backward_hook(
                 module, _root_pre_backward
             )
@@ -610,6 +679,13 @@ class FSDP(torch.nn.Module):
                 other settings.
             force_dispatch (bool, optional): force dispatch regardless of other settings.
         """
+        if len(self.raw_param_data) > 0:
+            # Replace the sharded buffer weights in (optimizer_)named_parameters
+            # with the unsharded weights referenced in raw_param_data.
+            for name, param in self.module.named_parameters():
+                if name in self.raw_param_data:
+                    param.data = self.raw_param_data[name]
+            self.raw_param_data = {}
         if not force_sync and self.ddp_config.overlap_param_gather:
             # All-gather the first bucket before the forward pass.
             first_param = list(self.module.parameters())[0]
@@ -647,7 +723,8 @@ class FSDP(torch.nn.Module):
     def finish_grad_sync(self):
         """
         Finishes grad sync (all-reduce or reduce-scatter) communication operations
-        for all model gradients.
+        for all model gradients. Call prior to the optimization step to resolve
+        asynchronous gradient reductions.
 
         When overlap_grad_reduce is set to True, waits for asynchronous communication
         calls to complete. When overlap_grad_reduce is set to False, calls synchronous
@@ -659,16 +736,22 @@ class FSDP(torch.nn.Module):
         else:
             self.start_grad_sync()
 
+        # Once the gradients have been reduced and scattered into main_grad_buffer,
+        # update the gradients for all buffered weights in optimizer_named_parameters.
         self.param_and_grad_buffer.update_main_grads()
 
         if self.ddp_config.overlap_param_gather:
             self.all_gather_pipeline.reset()
 
+        # Once the gradients have been transferred to the model weight buffer,
+        # update the weights and gradients for all parameters in the module
+        # to reference the buffer shards in preparation for the optimizer step.
         optimizer_named_parameters = dict(self.optimizer_named_parameters())
         self.raw_param_data = {}
         for name, param in self.module.named_parameters():
             if name in optimizer_named_parameters:
                 self.raw_param_data[name] = param.data
+                # Sharded / Distributed Optimization
                 param.data = optimizer_named_parameters[name].data
                 param.grad = optimizer_named_parameters[name].grad
             else:
@@ -746,6 +829,8 @@ class FSDP(torch.nn.Module):
         Wrapped forward pass of the model managed by FSDP.
         """
         if len(self.raw_param_data) > 0:
+            # Replace the sharded buffer weights in (optimizer_)named_parameters
+            # with the unsharded weights referenced in raw_param_data.
             for name, param in self.module.named_parameters():
                 if name in self.raw_param_data:
                     param.data = self.raw_param_data[name]

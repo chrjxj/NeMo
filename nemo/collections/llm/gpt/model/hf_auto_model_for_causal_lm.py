@@ -26,7 +26,6 @@ from nemo.automodel.loss.linear_ce import HAVE_LINEAR_LOSS_CE, fused_linear_cros
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
-from nemo.lightning.pytorch.custom_fsdp import FSDP
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
 
@@ -392,10 +391,6 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.loss_buffer = []
         tps = self.n_tok / time_delta
         self.n_tok = 0
-
-        if isinstance(self.model, FSDP):
-            # If the model uses custom FSDP2, wait for all sharded gradients to be reduced and unsharded.
-            self.model.finish_grad_sync()
 
         # reduce across ranks
         is_ddp = isinstance(self.trainer.strategy, pl.strategies.DDPStrategy)

@@ -233,8 +233,13 @@ def main():
         '--cfsdp2-unit-modules',
         type=str,
         nargs='+',
-        default=None,
-        help='Set of custom FSDP2 unit module classes to use for sharding. Required for custom FSDP2.',
+        default=[],
+        help=(
+            'Set of custom FSDP2 unit module classes for coalesced collective communication in FSDP. '
+            'Modules that are not identified as FSDP unit modules will be arbitrarily bucketed and '
+            'sharded, which may cause increased communication overhead for AG & RS operations as well '
+            'as inflated memory usage to allocate irrelevant parameters or gradients during training.'
+        ),
     )
     parser.add_argument('--use-te-optimizer', action='store_true', help='Use TE optimizer')
     parser.add_argument('--grad-clip', type=float, default=1.0, help='Grad clip value')

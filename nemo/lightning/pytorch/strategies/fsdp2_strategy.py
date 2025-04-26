@@ -17,6 +17,7 @@ import logging as _logging
 import os
 import re
 import shutil
+import types
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
@@ -31,6 +32,7 @@ from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy as
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
+from nemo.lightning.pytorch.custom_fsdp import FSDP
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, SequenceParallel
 from typing_extensions import override
 
@@ -118,7 +120,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         self.checkpoint = None
         self.parallelized = False
         self.cfsdp2 = cfsdp2
-        self.cfsdp2_unit_modules = cfsdp2_unit_modules
+        self.cfsdp2_unit_modules = cfsdp2_unit_modules if cfsdp2_unit_modules is not None else []
         self.ddp_config = ddp_config
         self.mp_policy = mp_policy
         if self.mp_policy is None:
@@ -277,13 +279,32 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         # setup optim
         if getattr(self, '_setup_optimizers', True) and trainer.state.fn == TrainerFn.FITTING:
             super().setup_optimizers(trainer)
+        # Add gradient reduction synchronization to the pre-optimizer hook.
+        if self.cfsdp2:
+            # Save a reference to the original hook.
+            base_on_before_optimizer_step = self.lightning_module.on_before_optimizer_step
+
+            def _on_before_optimizer_step_with_async_grad_reduce(lightning_module, optimizer):
+                """
+                Modified optimizer pre-step hook to wait for all sharded gradients to be reduced and unsharded.
+                """
+                if isinstance(lightning_module.model, FSDP):
+                    # If the model uses custom FSDP2, wait for all sharded gradients to be reduced and unsharded.
+                    # Necessary because the post-backward reduce-scatter is asynchronous, so gradients and backward
+                    # computations are concurrent, but the gradients of the final layer may not be available yet.
+                    lightning_module.model.finish_grad_sync()
+                # Call the pre-optimizer hook.
+                base_on_before_optimizer_step(optimizer)
+
+            # Replace the hook with a modified version that waits for all sharded gradients to be reduced and unsharded.
+            self.lightning_module.on_before_optimizer_step = types.MethodType(_on_before_optimizer_step_with_async_grad_reduce, self.lightning_module)
 
     def parallelize(self):
         """Applies fully_shard on model"""
         if not self.parallelized:
             # Mark model parallelized.
             self.parallelized = True
-            if self.cfsdp2 and self.cfsdp2_unit_modules:  # ... cfsdp2_unit_modules is not None and not an empty list
+            if self.cfsdp2:
                 # Use custom FSDP2.
                 # TODO(@cspades): Remove this guard when we confirm support for DTensor-based TP and CP.
                 assert (
@@ -419,9 +440,9 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             loss = self.lightning_module.training_step(batch, batch_idx)
 
         if self.cfsdp2:
-            # If custom FSDP2 is enabled, copy the main high-precision buffer weights to the
-            # model lower-precision buffer weights after the forward pass in preparation
-            # for the high-precision backwards pass.
+            # If custom FSDP2 is configured with "optim" (optimizer state / high-precision model weight sharding),
+            # then the optimizer step will be applied to the main high-precision model weights. Update the model
+            # weight precision before the optimizer step.
             self.lightning_module.model.param_and_grad_buffer.copy_main_weights_to_model_weights()
 
         self.lightning_module.log(
