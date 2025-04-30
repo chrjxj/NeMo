@@ -679,6 +679,13 @@ class FSDP(torch.nn.Module):
                 other settings.
             force_dispatch (bool, optional): force dispatch regardless of other settings.
         """
+        # Replace the sharded parameters with the unsharded parameters
+        # so we can all-gather the unsharded bucket during loop setup.
+        # Only run once per loop / root module forward to allocate memory,
+        # as the parameter data will be overwritten during the forward pass.
+        # Note: We need to resize all parameters because we don't know
+        # what buckets we will be pre-fetching, so just using the original
+        # module parameters will allocate the correct sizes for all buckets.
         if len(self.raw_param_data) > 0:
             # Replace the sharded buffer weights in (optimizer_)named_parameters
             # with the unsharded weights referenced in raw_param_data.
@@ -686,6 +693,7 @@ class FSDP(torch.nn.Module):
                 if name in self.raw_param_data:
                     param.data = self.raw_param_data[name]
             self.raw_param_data = {}
+
         if not force_sync and self.ddp_config.overlap_param_gather:
             # All-gather the first bucket before the forward pass.
             first_param = list(self.module.parameters())[0]

@@ -279,7 +279,8 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         # setup optim
         if getattr(self, '_setup_optimizers', True) and trainer.state.fn == TrainerFn.FITTING:
             super().setup_optimizers(trainer)
-        # Add gradient reduction synchronization to the pre-optimizer hook.
+
+        # Add custom FSDP hooks to the LightningModule.
         if self.cfsdp2:
             # Save a reference to the original hook.
             base_on_before_optimizer_step = self.lightning_module.on_before_optimizer_step
@@ -293,11 +294,34 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
                     # Necessary because the post-backward reduce-scatter is asynchronous, so gradients and backward
                     # computations are concurrent, but the gradients of the final layer may not be available yet.
                     lightning_module.model.finish_grad_sync()
+
                 # Call the pre-optimizer hook.
                 base_on_before_optimizer_step(optimizer)
 
             # Replace the hook with a modified version that waits for all sharded gradients to be reduced and unsharded.
             self.lightning_module.on_before_optimizer_step = types.MethodType(_on_before_optimizer_step_with_async_grad_reduce, self.lightning_module)
+
+            def _on_after_optimizer_step_with_model_weight_update(
+                lightning_module,
+                epoch,
+                batch_idx,
+                optimizer,
+                optimizer_closure,
+            ):
+                """
+                Modified optimizer post-step hook to update the model weights.
+                """
+                # Apply the optimizer step to the model weights.
+                optimizer.step(closure=optimizer_closure)
+
+                if isinstance(lightning_module.model, FSDP):
+                    # If custom FSDP2 is configured with "optim" (optimizer state / high-precision model weight sharding),
+                    # then the optimizer step will be applied to the main high-precision model weights. Update the model
+                    # weights after the optimizer step.
+                    lightning_module.model.param_and_grad_buffer.copy_main_weights_to_model_weights()
+
+            # Replace the hook with a modified version that updates the model weights after taking an optimizer step.
+            self.lightning_module.optimizer_step = types.MethodType(_on_after_optimizer_step_with_model_weight_update, self.lightning_module)
 
     def parallelize(self):
         """Applies fully_shard on model"""
@@ -438,12 +462,6 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             loss = self.lightning_module.training_step(batch, batch_idx, context_parallel=True)
         else:
             loss = self.lightning_module.training_step(batch, batch_idx)
-
-        if self.cfsdp2:
-            # If custom FSDP2 is configured with "optim" (optimizer state / high-precision model weight sharding),
-            # then the optimizer step will be applied to the main high-precision model weights. Update the model
-            # weight precision before the optimizer step.
-            self.lightning_module.model.param_and_grad_buffer.copy_main_weights_to_model_weights()
 
         self.lightning_module.log(
             'global_step',
