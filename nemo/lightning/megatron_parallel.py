@@ -1796,7 +1796,7 @@ class MaskedTokenLossReduction(MegatronLossReduction):
         else:
             num_valid_tokens_in_ub = batch['num_valid_tokens_in_ub']
         if num_valid_tokens_in_ub < 0.5:  # no valid tokens
-            num_valid_tokens_in_ub += 1.0
+            num_valid_tokens_in_ub += 1
         num_valid_tokens_in_ub = num_valid_tokens_in_ub.clone().detach().to(torch.int)
 
         if self.validation_step and not self.val_drop_last:
