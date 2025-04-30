@@ -32,7 +32,7 @@ from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy as
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
-from nemo.lightning.pytorch.custom_fsdp import FSDP
+from megatron.core.distributed.custom_fsdp import FSDP
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, SequenceParallel
 from typing_extensions import override
 

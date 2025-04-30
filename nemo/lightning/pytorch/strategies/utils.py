@@ -37,7 +37,7 @@ from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, 
 
 from nemo.lightning import _strategy_lib
 from nemo.lightning.pytorch.callbacks import MegatronProgressBar, ProgressPrinter
-from nemo.lightning.pytorch.custom_fsdp import FSDP
+from megatron.core.distributed.custom_fsdp import FSDP
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 from nemo.utils.import_utils import safe_import_from
 
