@@ -217,12 +217,12 @@ def get_nmt_tokenizer(
     elif library == 'byte-level':
         from nemo.collections.common.tokenizers.bytelevel_tokenizers import ByteLevelTokenizer
 
-        logging.info(f'Using byte-level tokenization')
+        logging.info('Using byte-level tokenization')
         return ByteLevelTokenizer(special_tokens_dict)
     elif library == 'regex':
         from nemo.collections.common.tokenizers.regex_tokenizer import RegExTokenizer
 
-        logging.info(f'Using regex tokenization')
+        logging.info('Using regex tokenization')
         return RegExTokenizer().load_tokenizer(regex_file=tokenizer_model, vocab_file=vocab_file)
     elif library == 'megatron':
 
