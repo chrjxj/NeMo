@@ -40,6 +40,10 @@ def get_tokenizer_list() -> List[str]:
 
 @dataclass
 class TokenizerConfig:
+    """
+    Tokenizer Configuration Dataclass.
+    """
+
     library: str = MISSING
     tokenizer_model: Optional[str] = None
     vocab_size: Optional[int] = None
@@ -70,7 +74,8 @@ def get_tokenizer(
             nemo_nlp.modules.common.get_huggingface_pretrained_lm_models_list()
         tokenizer_model: tokenizer model file of sentencepiece
         special_tokens: dict of special tokens.
-            For additional special tokens besides standard special tokens (bos, eos, pad, etc.), such as sentinel tokens for T5 (<extra_id_0>, <extra_id_1>, etc.), use key 'additional_special_tokens'
+            For additional special tokens besides standard special tokens (bos, eos, pad, etc.), such as sentinel
+            tokens for T5 (<extra_id_0>, <extra_id_1>, etc.), use key 'additional_special_tokens'
         vocab_file: path to vocab file
         use_fast: (only for HuggingFace AutoTokenizer) set to True to use fast HuggingFace tokenizer
         bpe_dropout: (experimental) BPE dropout tries to corrupt the standard segmentation
@@ -101,7 +106,8 @@ def get_tokenizer(
             )
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
-                "Megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Megatron-core was not found. Please see the NeMo README for installation instructions: "
+                " https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         if vocab_file is None:
             vocab_file = get_megatron_vocab_file(tokenizer_name)
@@ -139,8 +145,8 @@ def get_tokenizer(
         return RegExTokenizer().load_tokenizer(regex_file=tokenizer_model, vocab_file=vocab_file)
 
     logging.info(
-        f"Getting HuggingFace AutoTokenizer with pretrained_model_name: {tokenizer_name}, vocab_file: {vocab_file}, merges_files: {merges_file}, "
-        f"special_tokens_dict: {special_tokens_dict}, and use_fast: {use_fast}"
+        f"Getting HuggingFace AutoTokenizer with pretrained_model_name: {tokenizer_name}, vocab_file: {vocab_file}, "
+        f" merges_files: {merges_file}, special_tokens_dict: {special_tokens_dict}, and use_fast: {use_fast}"
     )
     from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
@@ -244,7 +250,8 @@ def get_nmt_tokenizer(
         if model_name in megatron_tokenizer_model_map:
             model_name = megatron_tokenizer_model_map[model_name]
         logging.info(
-            f"Getting Megatron tokenizer for pretrained model name: {model_name}, custom vocab file: {vocab_file}, and merges file: {merges_file}"
+            f"Getting Megatron tokenizer for pretrained model name: {model_name}, custom vocab file: {vocab_file}, "
+            f"and merges file: {merges_file}"
         )
         return get_tokenizer(
             tokenizer_name=model_name,
