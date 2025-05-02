@@ -301,6 +301,9 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             # Replace the hook with a modified version that waits for all sharded gradients to be reduced and unsharded.
             self.lightning_module.on_before_optimizer_step = types.MethodType(_on_before_optimizer_step_with_async_grad_reduce, self.lightning_module)
 
+            # Save a reference to the original optimizer step.
+            base_optimizer_step = self.lightning_module.optimizer_step
+
             def _on_after_optimizer_step_with_model_weight_update(
                 lightning_module,
                 epoch,
@@ -312,7 +315,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
                 Modified optimizer post-step hook to update the model weights.
                 """
                 # Apply the optimizer step to the model weights.
-                optimizer.step(closure=optimizer_closure)
+                base_optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
 
                 if isinstance(lightning_module.model, FSDP):
                     # If custom FSDP2 is configured with "optim" (optimizer state / high-precision model weight sharding),
@@ -330,10 +333,6 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             self.parallelized = True
             if self.cfsdp2:
                 # Use custom FSDP2.
-                # TODO(@cspades): Remove this guard when we confirm support for DTensor-based TP and CP.
-                assert (
-                    self._tensor_parallel_size == 1 and self.context_parallel_size == 1
-                ), "Support for TP>1 and CP>1 when using CFSDP2 is not yet implemented."
                 self.lightning_module.model = custom_fsdp2_strategy_parallelize(
                     self.lightning_module.model,
                     device_mesh=self._device_mesh,
