@@ -340,20 +340,20 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
         Raises:
             AssertionError: If model_name is not provided for heterogeneous models
         """
-        from transformers import AutoModelForCausalLM
+        from transformers import AutoConfig, AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights():
             if from_config:
                 # Llama-Nemotron Nano / Llama31Nemotron70BConfig
                 return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
+
             # Llama-Nemotron Super/Ultra
             assert model_name is not None
-            hf_model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                torch_dtype=dtype,
-            )
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True, local_files_only=True)
+
+            hf_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True, torch_dtype=dtype)
+
             # Register the AutoModel Hook so that the custom modeling files are saved during save_pretrained()
             type(hf_model).register_for_auto_class("AutoModelForCausalLM")
             return hf_model
@@ -385,7 +385,7 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
         source, _ = self.nemo_load(str(self))
         is_heterogeneous = isinstance(source.config, HeterogeneousTransformerConfig)
         if target_model_name is None:
-            # Llama-Nemotron Super/Ultra uses customize modeling class
+            # Llama-Nemotron Super/Ultra uses custom modeling class
             if is_heterogeneous:
                 num_layers = source.config.num_layers
                 if num_layers == 80:
