@@ -17,15 +17,17 @@ from typing import Optional, Tuple, Union
 import torch
 from einops import rearrange
 from megatron.core import parallel_state
-from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.attention import SelfAttention as MCoreSelfAttention
 from megatron.core.transformer.spec_utils import ModuleSpec
-from megatron.core.transformer.torch_norm import L2Norm
-from megatron.core.utils import deprecate_inference_params, is_fa_min_version
 from torch import Tensor
+
+from nemo.utils.import_utils import safe_import
+L2Norm, HAVE_L2NORM = safe_import("megatron.core.transformer.torch_norm.L2Norm")
+deprecate_inference_params, HAVE_DEPRECATE_INFERENCE_PARAMS = safe_import("megatron.core.utils.deprecate_inference_params")
+is_fa_min_version, HAVE_IS_FA_MIN_VERSION = safe_import("megatron.core.utils.is_fa_min_version")
 
 try:
     from flashattn_hopper.flash_attn_interface import _flash_attn_forward
@@ -169,7 +171,7 @@ class Llama4SelfAttention(MCoreSelfAttention):
         hidden_states: Tensor,
         attention_mask: Tensor,
         key_value_states: Optional[Tensor] = None,
-        inference_context: Optional[BaseInferenceContext] = None,
+        inference_context = None,
         rotary_pos_emb: Optional[Union[Tensor, Tuple[Tensor, Tensor]]] = None,
         rotary_pos_cos: Optional[Tensor] = None,
         rotary_pos_sin: Optional[Tensor] = None,
@@ -177,7 +179,7 @@ class Llama4SelfAttention(MCoreSelfAttention):
         packed_seq_params: Optional[PackedSeqParams] = None,
         sequence_len_offset: Optional[int] = None,
         *,
-        inference_params: Optional[BaseInferenceContext] = None,
+        inference_params = None,
     ) -> Tuple[Tensor, Tensor]:
         """
         Perform a forward pass through the attention module.

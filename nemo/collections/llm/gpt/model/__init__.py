@@ -94,13 +94,13 @@ from nemo.collections.llm.gpt.model.llama_embedding import (
     Llama32EmbeddingConfig3B,
     LlamaEmbeddingModel,
 )
-from nemo.collections.llm.gpt.model.llama_nemotron import (
-    Llama31Nemotron70BConfig,
-    Llama31NemotronNano8BConfig,
-    Llama31NemotronUltra253BConfig,
-    Llama33NemotronSuper49BConfig,
-    LlamaNemotronModel,
-)
+# from nemo.collections.llm.gpt.model.llama_nemotron import (
+#     Llama31Nemotron70BConfig,
+#     Llama31NemotronNano8BConfig,
+#     Llama31NemotronUltra253BConfig,
+#     Llama33NemotronSuper49BConfig,
+#     LlamaNemotronModel,
+# )
 from nemo.collections.llm.gpt.model.mistral import MistralConfig7B, MistralModel, MistralNeMoConfig12B
 from nemo.collections.llm.gpt.model.mixtral import (
     MixtralConfig,
@@ -195,11 +195,11 @@ __all__ = [
     "Llama4Experts16Config",
     "Llama4Experts128Config",
     "Llama4Config",
-    "LlamaNemotronModel",
-    "Llama31NemotronNano8BConfig",
-    "Llama33NemotronSuper49BConfig",
-    "Llama31NemotronUltra253BConfig",
-    "Llama31Nemotron70BConfig",
+    # "LlamaNemotronModel",
+    # "Llama31NemotronNano8BConfig",
+    # "Llama33NemotronSuper49BConfig",
+    # "Llama31NemotronUltra253BConfig",
+    # "Llama31Nemotron70BConfig",
     "NemotronConfig",
     "Nemotron3Config4B",
     "Nemotron3Config8B",

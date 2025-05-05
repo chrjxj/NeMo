@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 import lightning.pytorch as pl
 import nemo_run as run
-from nemo.collections.llm import Llama33NemotronSuper49BConfig, LlamaNemotronModel
+# from nemo.collections.llm import Llama33NemotronSuper49BConfig, LlamaNemotronModel
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.llm.peft import PEFT_STR2CLS

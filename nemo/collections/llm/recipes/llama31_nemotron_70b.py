@@ -22,7 +22,7 @@ from lightning.pytorch.callbacks.callback import Callback
 from megatron.core.distributed import DistributedDataParallelConfig
 
 from nemo import lightning as nl
-from nemo.collections.llm import Llama31Nemotron70BConfig, LlamaNemotronModel
+# from nemo.collections.llm import Llama31Nemotron70BConfig, LlamaNemotronModel
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs

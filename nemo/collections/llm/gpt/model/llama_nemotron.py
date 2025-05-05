@@ -42,8 +42,8 @@ from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
 
 _, HAVE_TE = safe_import("transformer_engine")
-from megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs import get_gpt_heterogeneous_layer_spec
-from megatron.core.transformer.heterogeneous.heterogeneous_config import HeterogeneousTransformerConfig
+get_gpt_heterogeneous_layer_spec, HAVE_GPT_HETEROGENEOUS = safe_import("megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs.get_gpt_heterogeneous_layer_spec")
+HeterogeneousTransformerConfig, HAVE_HETEROGENEOUS_TRANSFORMER_CONFIG = safe_import("megatron.core.transformer.heterogeneous.heterogeneous_config.HeterogeneousTransformerConfig")
 from megatron.core.transformer.spec_utils import ModuleSpec
 
 if TYPE_CHECKING:
